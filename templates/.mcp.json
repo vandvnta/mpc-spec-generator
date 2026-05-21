@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "spec-generator": {
+      "command": "node",
+      "args": ["/ĐƯỜNG_DẪN_TUYỆT_ĐỐI/mcp-spec-generator/dist/index.js"]
+    }
+  }
+}
