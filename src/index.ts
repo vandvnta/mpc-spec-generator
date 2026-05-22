@@ -88,11 +88,10 @@ function formatTimestamp(d: Date): string {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
-// M6: Added .filter() to remove empty entries from comma/pipe-separated inputs
 function toBulletList(value: string | undefined): string {
   if (!value) return "N/A";
   return value
-    .split(",")
+    .split("\n")
     .filter((item) => item.trim() !== "")
     .map((item) => `- ${item.trim()}`)
     .join("\n");
@@ -100,10 +99,18 @@ function toBulletList(value: string | undefined): string {
 
 function toNumberedList(value: string | undefined): string {
   if (!value) return "N/A";
+  let counter = 0;
   return value
     .split(" | ")
     .filter((step) => step.trim() !== "")
-    .map((step, i) => `${i + 1}. ${step.trim()}`)
+    .map((step) => {
+      const trimmed = step.trim();
+      if (trimmed.startsWith("##")) {
+        return `\n### ${trimmed.slice(2).trim()}`;
+      }
+      counter++;
+      return `${counter}. ${trimmed}`;
+    })
     .join("\n");
 }
 
@@ -122,7 +129,7 @@ function resolveOutputDir(baseOutputDir: string, subDir: string, projectPath?: s
 function toCheckboxList(value: string | undefined): string {
   if (!value) return "N/A";
   return value
-    .split(",")
+    .split("\n")
     .filter((item) => item.trim() !== "")
     .map((item) => `- [ ] ${item.trim()}`)
     .join("\n");
@@ -192,12 +199,31 @@ ${toCheckboxList(open_questions)}
 `;
 }
 
+const TEST_PURPOSE_VALUES = [
+  "Regression Testing", "Integration Testing", "System Testing", "Acceptance Testing",
+  "Load Testing", "Stress Testing", "Security Testing", "Usability Testing",
+  "Compatibility Testing", "Exploratory Testing", "Smoke Testing", "Sanity Testing",
+] as const;
+
+const SCENARIO_TYPE_VALUES = [
+  "Positive Scenario", "Negative Scenario", "Boundary Scenario", "Edge Scenario",
+  "Normal Scenario", "Exception Scenario", "Error Handling", "Invalid Data",
+  "Null Input", "Timeout Scenario",
+] as const;
+
+const TEST_TYPE_VALUES = ["API", "UI", "DB"] as const;
+
 const TestCaseItemSchema = z.object({
-  scenario:        z.string().min(1),
+  category:        z.string().min(1),
+  test_title:      z.string().min(1),
+  test_purpose:    z.enum(TEST_PURPOSE_VALUES),
+  scenario_type:   z.enum(SCENARIO_TYPE_VALUES),
+  test_type:       z.enum(TEST_TYPE_VALUES),
   preconditions:   z.string().min(1),
   steps:           z.string().min(1),
+  test_data:       z.string().default(""),
   expected_result: z.string().min(1),
-  priority:        z.enum(["High", "Medium", "Low"]),
+  notes:           z.string().default(""),
 });
 
 // Removed project_name/author/stack — these were validated but never used in Excel output
@@ -223,18 +249,9 @@ const LEFT_WRAP: Partial<ExcelJS.Alignment> = {
   wrapText:   true,
 };
 
-const DEFAULT_STATUS = "Not Run";
-
-const COLUMNS: Array<{ header: string; key: string; width: number }> = [
-  { header: "Test Case ID",    key: "id",             width: 10 },
-  { header: "Feature",         key: "feature",        width: 20 },
-  { header: "Scenario",        key: "scenario",       width: 30 },
-  { header: "Preconditions",   key: "preconditions",  width: 25 },
-  { header: "Test Steps",      key: "steps",          width: 40 },
-  { header: "Expected Result", key: "expected_result",width: 30 },
-  { header: "Priority",        key: "priority",       width: 12 },
-  { header: "Status",          key: "status",         width: 12 },
-];
+const DEFAULT_STATUS = "Not run";
+const TEMPLATE_PATH = path.resolve(__dirname, "../templates/TESTCASE.xlsx");
+const TC_DATA_START_ROW = 13;
 
 async function generateXlsx(
   feature: string,
@@ -243,20 +260,12 @@ async function generateXlsx(
   timestamp: string
 ): Promise<string> {
   const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet("Test Cases");
+  await workbook.xlsx.readFile(TEMPLATE_PATH);
+  const sheet = workbook.getWorksheet("TestCase");
+  if (!sheet) throw new Error("Sheet 'TestCase' không tìm thấy trong template TESTCASE.xlsx");
 
-  sheet.columns = COLUMNS;
-
-  const headerRow = sheet.getRow(1);
-  COLUMNS.forEach((col, idx) => {
-    const cell = headerRow.getCell(idx + 1);
-    cell.value = col.header;
-    cell.font      = { bold: true, size: 12, color: { argb: "FFFFFFFF" } };
-    cell.fill      = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2F5496" } };
-    cell.alignment = LEFT_WRAP;
-    cell.border    = THIN_BORDER;
-  });
-  headerRow.commit();
+  // Set Screen/Function name in D4 (next to merged label B4:C4)
+  sheet.getRow(4).getCell(4).value = feature;
 
   const altFill: ExcelJS.Fill = {
     type: "pattern",
@@ -265,26 +274,41 @@ async function generateXlsx(
   };
 
   items.forEach((tc, i) => {
-    const row = sheet.addRow({
-      id:              `TC-${String(i + 1).padStart(3, "0")}`,
-      feature:         feature,
-      scenario:        tc.scenario,
-      preconditions:   tc.preconditions,
-      // M6: filter empty steps from pipe-separated input
-      steps:           tc.steps.split(" | ").filter((s) => s.trim() !== "").map((s, n) => `${n + 1}. ${s.trim()}`).join("\n"),
-      expected_result: tc.expected_result,
-      priority:        tc.priority,
-      status:          DEFAULT_STATUS,
-    });
+    const row = sheet.getRow(TC_DATA_START_ROW + i);
+
+    row.getCell(2).value  = i + 1;
+    row.getCell(3).value  = `TC-${String(i + 1).padStart(3, "0")}`;
+    row.getCell(4).value  = tc.category;
+    row.getCell(5).value  = tc.test_title;
+    row.getCell(6).value  = tc.test_purpose;
+    row.getCell(7).value  = tc.scenario_type;
+    row.getCell(8).value  = tc.test_type;
+    row.getCell(9).value  = tc.preconditions;
+    row.getCell(10).value = tc.steps.split(" | ").filter((s) => s.trim() !== "").map((s, n) => `${n + 1}. ${s.trim()}`).join("\n");
+    row.getCell(11).value = tc.test_data;
+    row.getCell(12).value = tc.expected_result;
+    row.getCell(13).value = DEFAULT_STATUS;
+    row.getCell(14).value = "";
+    row.getCell(15).value = "";
+    row.getCell(16).value = tc.notes;
 
     const useAlt = i % 2 === 1;
-    row.eachCell((cell) => {
+    for (let c = 2; c <= 16; c++) {
+      const cell = row.getCell(c);
       cell.alignment = LEFT_WRAP;
       cell.border    = THIN_BORDER;
       if (useAlt) cell.fill = altFill;
-    });
+    }
     row.commit();
   });
+
+  // Apply data validations to all data rows
+  for (let r = TC_DATA_START_ROW; r < TC_DATA_START_ROW + items.length; r++) {
+    sheet.getCell(`F${r}`).dataValidation = { type: "list", allowBlank: true, formulae: [`"${TEST_PURPOSE_VALUES.join(",")}"`] };
+    sheet.getCell(`G${r}`).dataValidation = { type: "list", allowBlank: true, formulae: [`"${SCENARIO_TYPE_VALUES.join(",")}"`] };
+    sheet.getCell(`H${r}`).dataValidation = { type: "list", allowBlank: true, formulae: [`"${TEST_TYPE_VALUES.join(",")}"`] };
+    sheet.getCell(`M${r}`).dataValidation = { type: "list", allowBlank: true, formulae: ['"Passed,Failed,Not run"'] };
+  }
 
   const safeFeature = toSlug(feature) || "unnamed";
   const filename = `testcase_${safeFeature}_${timestamp}.xlsx`;
@@ -338,7 +362,7 @@ function renderIssues(items: IssueItem[]): string {
 function renderChecklist(value: string, hasCritical: boolean): string {
   const mark = hasCritical ? "[ ]" : "[x]";
   return value
-    .split(",")
+    .split("\n")
     .filter((item) => item.trim() !== "")
     .map((item) => `- ${mark} ${item.trim()}`)
     .join("\n");
@@ -429,13 +453,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           author:            { type: "string", description: "Tên kỹ sư phụ trách" },
           stack:             { type: "string", description: 'Tech stack, ví dụ: "Laravel 10 + React 18"' },
           overview:          { type: "string", description: "Mô tả ngắn chức năng (1-3 câu)" },
-          actors:            { type: "string", description: "Danh sách actors, cách nhau bằng dấu phẩy" },
-          preconditions:     { type: "string", description: "Điều kiện tiên quyết, cách nhau bằng dấu phẩy" },
-          normal_flow:       { type: "string", description: 'Các bước luồng chính, cách nhau bằng " | "' },
-          alternative_flows: { type: "string", description: '(Tùy chọn) Luồng thay thế, cách nhau bằng " | "' },
-          business_rules:    { type: "string", description: "Business rules, cách nhau bằng dấu phẩy" },
-          non_functional:    { type: "string", description: "(Tùy chọn) Yêu cầu phi chức năng, cách nhau bằng dấu phẩy" },
-          open_questions:    { type: "string", description: "(Tùy chọn) Câu hỏi còn mở, cách nhau bằng dấu phẩy" },
+          actors:            { type: "string", description: "Danh sách actors, mỗi item một dòng (\\n)" },
+          preconditions:     { type: "string", description: "Điều kiện tiên quyết, mỗi item một dòng (\\n)" },
+          normal_flow:       { type: "string", description: 'Các bước luồng chính, cách nhau bằng " | ". Dùng "##TÊN_NHÓM" để tạo group header, ví dụ: "##POSTS | GET /api/posts:... | ##COMMENTS | POST /api/comments:..."' },
+          alternative_flows: { type: "string", description: '(Tùy chọn) Luồng thay thế, cách nhau bằng " | ". Hỗ trợ "##TÊN_NHÓM" làm group header' },
+          business_rules:    { type: "string", description: "Business rules, mỗi item một dòng (\\n)" },
+          non_functional:    { type: "string", description: "(Tùy chọn) Yêu cầu phi chức năng, mỗi item một dòng (\\n)" },
+          open_questions:    { type: "string", description: "(Tùy chọn) Câu hỏi còn mở, mỗi item một dòng (\\n)" },
         },
         required: [
           "project_name", "feature_name", "author", "stack",
@@ -455,7 +479,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           test_cases: {
             type: "string",
             description:
-              'JSON array string (tối đa 500 items). Mỗi phần tử: {"scenario":"...","preconditions":"...","steps":"bước 1 | bước 2","expected_result":"...","priority":"High|Medium|Low"}',
+              'JSON array string (tối đa 500 items). Mỗi phần tử: {"category":"...","test_title":"...","test_purpose":"Regression Testing|Integration Testing|System Testing|Acceptance Testing|Load Testing|Stress Testing|Security Testing|Usability Testing|Compatibility Testing|Exploratory Testing|Smoke Testing|Sanity Testing","scenario_type":"Positive Scenario|Negative Scenario|Boundary Scenario|Edge Scenario|Normal Scenario|Exception Scenario|Error Handling|Invalid Data|Null Input|Timeout Scenario","test_type":"API|UI|DB","preconditions":"...","steps":"bước 1 | bước 2","test_data":"","expected_result":"...","notes":""}',
           },
         },
         required: ["feature", "test_cases"],
@@ -481,15 +505,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: '"Approved" | "Approved with Changes" | "Rejected"',
           },
           summary:         { type: "string", description: "Tóm tắt tổng thể (1-3 câu)" },
-          good_points:     { type: "string", description: "Điểm tốt, cách nhau bằng dấu phẩy" },
+          good_points:     { type: "string", description: "Điểm tốt, mỗi item một dòng (\\n)" },
           issues: {
             type: "string",
             description:
               'JSON array string (tối đa 500 items). Mỗi phần tử: {"title":"...","severity":"Critical|Major|Minor","description":"...","suggestion":"..."}',
           },
-          recommendations: { type: "string", description: "Đề xuất, cách nhau bằng dấu phẩy" },
+          recommendations: { type: "string", description: "Đề xuất, mỗi item một dòng (\\n)" },
           conclusion:      { type: "string", description: "Kết luận ngắn gọn" },
-          checklist:       { type: "string", description: "Checklist items, cách nhau bằng dấu phẩy" },
+          checklist:       { type: "string", description: "Checklist items, mỗi item một dòng (\\n)" },
         },
         required: [
           "project_name", "feature_name", "reviewer", "reviewee",
@@ -637,12 +661,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         date:           formatDate(now),
         overall_result: params.overall_result,
         summary:        params.summary,
-        good_points:    params.good_points.split(",").filter((s) => s.trim() !== "").map((s) => s.trim()),
+        good_points:    params.good_points.split("\n").filter((s) => s.trim() !== "").map((s) => s.trim()),
         issues,
         severity_overview: { critical: criticalCount, major: majorCount, minor: minorCount },
-        recommendations: params.recommendations.split(",").filter((s) => s.trim() !== "").map((s) => s.trim()),
+        recommendations: params.recommendations.split("\n").filter((s) => s.trim() !== "").map((s) => s.trim()),
         conclusion:      params.conclusion,
-        checklist:       params.checklist.split(",").filter((s) => s.trim() !== "").map((s) => s.trim()),
+        checklist:       params.checklist.split("\n").filter((s) => s.trim() !== "").map((s) => s.trim()),
       };
 
       await Promise.all([
