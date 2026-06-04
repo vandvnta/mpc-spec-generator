@@ -46,13 +46,17 @@ const VIET_CHAR_MAP: Record<string, string> = {
 const projectPathField = z
   .string()
   .max(500)
-  .refine((val) => !val.includes(".."), 'project_path không được chứa ".."')
+  .refine(
+    (val) => !val.split(/[/\\]/).some(seg => seg === ".." || seg === "."),
+    'project_path không được chứa ".." hoặc "."'
+  )
   .optional();
 
 const GenerateSpecSchema = z.object({
   project_name:      z.string().min(1).max(500),
   project_path:      projectPathField,
   feature_name:      z.string().min(1).max(500),
+  feature_slug:      z.string().min(1).max(200).regex(/^[a-z0-9_-]+$/, 'feature_slug chỉ được chứa a-z, 0-9, _, -').optional(),
   author:            z.string().min(1).max(500),
   stack:             z.string().min(1).max(500),
   overview:          z.string().min(1).max(10_000),
@@ -64,6 +68,13 @@ const GenerateSpecSchema = z.object({
   ui_flow:           z.string().max(10_000).optional(),
   non_functional:    z.string().max(10_000).optional(),
   open_questions:    z.string().max(10_000).optional(),
+  feature_id:        z.string().max(200).optional(),
+  reviewer:          z.string().max(500).optional(),
+  scope:                 z.string().max(5_000).optional(),
+  out_of_scope:          z.string().max(5_000).optional(),
+  data_validation_rules: z.string().max(10_000).optional(),
+  api_contract:          z.string().max(50_000).optional(),
+  error_catalog:         z.string().max(50_000).optional(),
 });
 
 type SpecParams = z.infer<typeof GenerateSpecSchema>;
@@ -120,7 +131,13 @@ function resolveOutputDir(baseOutputDir: string, subDir: string, projectPath?: s
   if (!projectPath) return path.join(baseOutputDir, subDir);
   const trimmed = projectPath.replace(/[/\\]+$/, "");
   if (path.isAbsolute(trimmed)) {
-    return path.resolve(trimmed, "output", subDir);
+    const resolved = path.resolve(trimmed);
+    const root = path.parse(resolved).root;
+    const depth = path.relative(root, resolved).split(path.sep).filter(Boolean).length;
+    if (depth < 1) {
+      throw new Error(`project_path "${projectPath}" không hợp lệ — không được là root path`);
+    }
+    return path.resolve(resolved, "output", subDir);
   }
   const dirName = path.basename(trimmed);
   if (!dirName) {
@@ -129,6 +146,12 @@ function resolveOutputDir(baseOutputDir: string, subDir: string, projectPath?: s
     );
   }
   return path.join(baseOutputDir, dirName, subDir);
+}
+
+async function resolveAndMkdirOutputDir(subDir: string, projectPath?: string): Promise<string> {
+  const dir = resolveOutputDir(path.resolve(__dirname, "../output"), subDir, projectPath);
+  await fs.mkdir(dir, { recursive: true });
+  return dir;
 }
 
 function toCheckboxList(value: string | undefined): string {
@@ -141,7 +164,7 @@ function toCheckboxList(value: string | undefined): string {
 }
 
 function safeParse(raw: string): unknown {
-  if ((raw.match(/[[{]/g)?.length ?? 0) > 5000) {
+  if ((raw.match(/[[{]/g)?.length ?? 0) > 1000) {
     throw new Error("JSON quá phức tạp — từ chối parse");
   }
   return JSON.parse(raw);
@@ -157,12 +180,22 @@ function assertParsed<T>(result: z.SafeParseSuccess<T> | z.SafeParseError<T>): a
   }
 }
 
+function toolError(toolName: string, error: unknown): { isError: true; content: Array<{ type: "text"; text: string }> } {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`[${toolName}] Error:`, message);
+  return {
+    isError: true,
+    content: [{ type: "text", text: `Error ${toolName}: ${message}` }],
+  };
+}
+
 async function getNextVersion(outputDir: string, featureSlug: string): Promise<number> {
   try {
     const files = await fs.readdir(outputDir);
     const count = files.filter((f: string) => f.startsWith(`spec_${featureSlug}_`) && f.endsWith(".md")).length;
     return count + 1;
-  } catch {
+  } catch (e) {
+    if (!(e instanceof Error) || (e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     return 1;
   }
 }
@@ -182,15 +215,22 @@ async function renderSpec(params: SpecParams, now: Date, version: number): Promi
     stack:             params.stack,
     date:              formatDate(now),
     version:           `${version}.0`,
-    overview:          params.overview,
+    overview:          params.overview.replace(/\{\{/g, "{ {"),
     actors:            toBulletList(params.actors),
     preconditions:     toBulletList(params.preconditions),
     normal_flow:       toNumberedList(params.normal_flow),
     alternative_flows: toNumberedList(params.alternative_flows),
     business_rules:    toBulletList(params.business_rules),
-    ui_flow:           params.ui_flow ?? "_(Không có UI Flow cho chức năng này)_",
+    ui_flow:           (params.ui_flow ?? "_(Không có UI Flow cho chức năng này)_").replace(/\{\{/g, "{ {"),
     non_functional:    toBulletList(params.non_functional),
     open_questions:    toCheckboxList(params.open_questions),
+    feature_id:        params.feature_id ?? "_(Chưa có — lấy từ header table trong requirements)_",
+    reviewer:          params.reviewer ?? "_(Chưa có — lấy từ header table trong requirements)_",
+    scope:                 (params.scope ?? "_(Chưa có — lấy từ header table trong requirements)_").replace(/\{\{/g, "{ {"),
+    out_of_scope:          (params.out_of_scope ?? "_(Chưa có — lấy từ header table trong requirements)_").replace(/\{\{/g, "{ {"),
+    data_validation_rules: (params.data_validation_rules ?? "_(Chưa có thông tin — bổ sung từ requirements)_").replace(/\{\{/g, "{ {"),
+    api_contract:          (params.api_contract ?? "_(Chưa có thông tin — bổ sung từ requirements)_").replace(/\{\{/g, "{ {"),
+    error_catalog:         (params.error_catalog ?? "_(Chưa có — bổ sung bảng Error Catalog nếu requirements có)_").replace(/\{\{/g, "{ {"),
   };
 
   return template.replace(/\{\{(\w+)\}\}/g, (_, key) => replacements[key] ?? `{{${key}}}`);
@@ -224,10 +264,14 @@ const TestCaseItemSchema = z.object({
 });
 
 const GenerateTestcaseSchema = z.object({
-  project_path: projectPathField,
-  feature:      z.string().min(1).max(500).optional(),
+  project_path:  projectPathField,
+  feature:       z.string().min(1).max(500).optional(),
+  feature_slug:  z.string().min(1).max(200).regex(/^[a-z0-9_-]+$/, 'feature_slug chỉ được chứa a-z, 0-9, _, -').optional(),
   spec_file:    z.string().max(1000)
-    .refine(val => !val.includes(".."), 'spec_file không được chứa ".."')
+    .refine(
+      val => !val.split(/[/\\]/).some(seg => seg === ".." || seg === "."),
+      'spec_file không được chứa ".." hoặc "."'
+    )
     .refine(val => val.toLowerCase().endsWith(".md"), 'spec_file phải có đuôi .md')
     .optional(),
   test_cases:   z.string().min(1).max(500_000).optional(),
@@ -425,7 +469,6 @@ function parseSpecMarkdown(content: string): ParsedSpec {
     altFlowGroups:    extractGroups(altSection),
     businessRules:    extractBullets(getSectionContent([
       /^## 6\. Business Rules/m,
-      /^## 8\. Business Rules/m,
     ])),
     uiFlowGroups:     extractUIGroups(getSectionContent([
       /^## 9\. UI Flow/m,
@@ -596,7 +639,8 @@ async function generateXlsx(
   feature: string,
   items: TestCaseItem[],
   outputDir: string,
-  timestamp: string
+  timestamp: string,
+  featureSlug?: string
 ): Promise<string> {
   const workbook = new ExcelJS.Workbook();
   try {
@@ -653,7 +697,7 @@ async function generateXlsx(
     sheet.getCell(`M${r}`).dataValidation = { type: "list", allowBlank: true, formulae: ['"Passed,Failed,Not run"'] };
   }
 
-  const safeFeature = toSlug(feature) || "unnamed";
+  const safeFeature = (featureSlug || toSlug(feature)) || "unnamed";
   const filename = `testcase_${safeFeature}_${timestamp}.xlsx`;
   const filePath = path.join(outputDir, filename);
   await workbook.xlsx.writeFile(filePath);
@@ -672,6 +716,7 @@ const GenerateReviewSchema = z.object({
   project_name:    z.string().min(1).max(500),
   project_path:    projectPathField,
   feature_name:    z.string().min(1).max(500),
+  feature_slug:    z.string().min(1).max(200).regex(/^[a-z0-9_-]+$/, 'feature_slug chỉ được chứa a-z, 0-9, _, -').optional(),
   reviewer:        z.string().min(1).max(500),
   reviewee:        z.string().min(1).max(500),
   stack:           z.string().min(1).max(500),
@@ -814,6 +859,19 @@ User thường cung cấp qua một trong các cách:
 
 Nếu chưa rõ file requirements ở đâu → hỏi user trước khi tiến hành.
 
+### Trích xuất \`feature_name\`, \`feature_slug\`, \`feature_id\`
+
+Tìm trong requirements header table (bảng "Thông tin chung" đầu file):
+- **\`feature_slug\`**: Lấy từ trường "Tên chức năng" → lowercase, khoảng trắng thay bằng underscore.
+  VD: "Login" → \`"login"\`, "User Management" → \`"user_management"\`, "Quản lý danh mục" → \`"quan_ly_danh_muc"\`
+  **LUÔN truyền field này** — để đảm bảo slug khớp với convention của project; tool tự derive được nhưng kết quả có thể khác dự kiến.
+- **\`feature_name\`**: Lấy từ tiêu đề document (thường là phần tiếng Việt).
+  VD: tiêu đề "# Đăng nhập (Login)" → \`feature_name = "Đăng nhập"\`
+- **\`feature_id\`**: Lấy từ trường "Feature ID" trong header table. VD: "FT-001"
+- **\`reviewer\`**: Lấy từ trường "Reviewer" trong header table. Nếu không có → để trống.
+- **\`scope\`**: Lấy từ trường "Scope" trong header table. Nếu không có → để trống.
+- **\`out_of_scope\`**: Lấy từ trường "Out of Scope" trong header table. Nếu không có → để trống.
+
 ### Trích xuất \`actors\`
 
 Tìm trong requirements:
@@ -844,6 +902,18 @@ PHẢI dùng \`##TÊN_NHÓM\` cho mỗi success scenario riêng biệt — mỗi
 Không dùng group → toàn bộ Section 4 chỉ sinh 1 case "Kiểm tra Main Flow thành công".
 Ví dụ cho update endpoint: "##Update title/content | 1. Admin gửi PUT với title | 2. Validate | 3. Trả 200 | ##Update with image | 1. Admin gửi PUT kèm file | 2. Store ảnh mới | 3. Xóa ảnh cũ | 4. Trả 200"
 
+**Khi requirements dùng \`### heading\` cho sub-flow:** PHẢI convert sang \`##heading\` (2 dấu #, không phải 3) rồi join steps bằng \` | \`.
+VD requirements có:
+\`\`\`
+### Lấy danh sách
+1. Client gửi GET /api/items
+2. Server trả về danh sách
+### Tạo mới
+1. Client gửi POST /api/items
+2. Server tạo bản ghi
+\`\`\`
+→ Truyền: \`"##Lấy danh sách | 1. Client gửi GET /api/items | 2. Server trả về danh sách | ##Tạo mới | 1. Client gửi POST /api/items | 2. Server tạo bản ghi"\`
+
 ### Trích xuất \`alternative_flows\`
 
 Error paths, exception cases. Tìm:
@@ -852,7 +922,10 @@ Error paths, exception cases. Tìm:
 - Validation failures: "Email đã tồn tại → báo lỗi 409", "Token hết hạn → redirect login"
 - Acceptance criteria (negative case)
 
-Format output: "TH1: [tên tình huống]: bước1|bước2 || TH2: [tên]: bước1|bước2"
+Format output: dùng \`##TÊN_NHÓM\` để nhóm, mỗi item cách nhau bằng \` | \`:
+VD: \`"##Validation thất bại | Email đã tồn tại → HTTP 409 | Token hết hạn → redirect login | ##Lỗi hệ thống | DB lỗi → HTTP 500 Internal Server Error"\`
+→ Mỗi item dạng \`điều kiện → expected_result\` — phần sau \`→\` trở thành expected_result trong test case.
+→ Nếu requirements dùng \`### heading\` cho nhóm alternative flow, convert sang \`##heading\` (chỉ 2 dấu #, không phải 3).
 
 Nếu không có section rõ ràng → suy luận từ validation rules trong business_rules
 (mỗi rule vi phạm → 1 alternative flow).
@@ -865,6 +938,37 @@ Rules kinh doanh, ràng buộc dữ liệu. Tìm:
 - Computed logic: "Tổng tiền = đơn giá × số lượng × (1 - % giảm giá)"
 - State transitions: "Trạng thái chỉ được chuyển từ A → B, không được từ A → C"
 - Limit / quota: "Tối đa 3 lần thử đăng nhập", "Rate limit 100 req/phút"
+
+### Trích xuất \`data_validation_rules\`
+
+Tìm trong requirements:
+- Section "Data Validation Rules", "Validation Rules", "Ràng buộc dữ liệu", "Quy tắc kiểm tra dữ liệu"
+- Bảng có columns: Field, Type, Required, Constraint, Error Code, Error Message (hoặc tương tự)
+- Nếu có → copy nguyên vẹn Markdown (kể cả header row và separator row)
+- Nếu có server-side và client-side riêng biệt → dùng \`### Server-side\` / \`### Client-side\` làm header, copy cả 2 bảng
+- Nếu không có section rõ ràng → để trống (field optional)
+
+### Trích xuất \`api_contract\`
+
+Tìm trong requirements:
+- Section "API Contract", "API Endpoints", "REST API", "Interface", "HTTP Contract"
+- Mô tả: method + path, request body (JSON), response examples (các HTTP status codes)
+- Nếu có → copy nguyên vẹn Markdown kể cả code blocks (\`\`\`json ... \`\`\`)
+- Nếu không có → để trống (field optional)
+
+### Trích xuất \`error_catalog\`
+
+Tìm trong requirements:
+- Section "Error Catalog", "Error Codes", "Danh sách lỗi", "Error List", "HTTP Error Responses"
+- Bảng có columns tối thiểu 4 cột: Error Code, HTTP Status, Message, Trigger Condition (và tùy chọn Retry?)
+- Nếu có → copy nguyên vẹn Markdown **kể cả header row và separator row** (\`|---|...|--- \`)
+- Nếu không có → để trống (field optional)
+
+VD output đúng (copy nguyên vẹn):
+\`| Error Code | HTTP Status | Message | Trigger Condition | Retry? |\n|---|---|---|---|---|\n| ERR-V-001 | 422 | "Email không đúng định dạng" | email không match RFC 5321 | No |\`
+
+Mỗi row đã điền → \`generate_testcase\` tự sinh 1 Error Handling test case.
+Row placeholder dạng \`[...]\` bị bỏ qua tự động.
 
 ### Trích xuất \`ui_flow\`
 
@@ -1091,7 +1195,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           project_name:      { type: "string", description: "Tên dự án" },
           project_path:      { type: "string", description: PROJECT_PATH_DESC },
-          feature_name:      { type: "string", description: "Tên chức năng" },
+          feature_name:      { type: "string", description: "Tên chức năng đầy đủ dùng để hiển thị trong tài liệu (tiếng Việt hoặc tiếng Anh). Ví dụ: 'Đăng nhập', 'Quản lý người dùng', 'User Login'." },
+          feature_slug:      { type: "string", description: "(Tùy chọn) Slug dùng cho tên file — chỉ gồm a-z, 0-9, _, - (không dấu, không khoảng trắng). Lấy từ trường 'Tên chức năng' trong requirements header table (lowercase, spaces → underscore). VD: 'Login' → 'login', 'User Management' → 'user_management'. LUÔN truyền field này khi đọc từ requirements file để tránh tạo slug tiếng Việt." },
           author:            { type: "string", description: "Tên kỹ sư phụ trách" },
           stack:             { type: "string", description: 'Tech stack, ví dụ: "Laravel 10 + React 18"' },
           overview:          { type: "string", description: "Mô tả ngắn chức năng (1-3 câu)" },
@@ -1103,6 +1208,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           ui_flow:           { type: "string", description: "(Tùy chọn) Mô tả luồng UI/frontend: entry point, các màn hình, trạng thái loading/error, hành vi submit. Giữ nguyên format markdown (dùng ### cho subsection). Chỉ điền khi requirements có mô tả UI." },
           non_functional:    { type: "string", description: "(Tùy chọn) Yêu cầu phi chức năng, mỗi item một dòng (\\n)" },
           open_questions:    { type: "string", description: "(Tùy chọn) Câu hỏi còn mở, mỗi item một dòng (\\n)" },
+          feature_id:        { type: "string", description: "(Tùy chọn) Feature ID, VD: FT-001 hoặc ticket ID từ Jira/Linear" },
+          reviewer:          { type: "string", description: "(Tùy chọn) Tên người review tài liệu spec" },
+          scope:                 { type: "string", description: "(Tùy chọn) Phạm vi spec bao phủ (1-2 câu)" },
+          out_of_scope:          { type: "string", description: "(Tùy chọn) Các phần liên quan nhưng không thuộc spec này (1-2 câu)" },
+          data_validation_rules: { type: "string", description: "(Tùy chọn) Data validation rules — copy nguyên vẹn Markdown từ requirements (bao gồm header row của table). Nếu có server-side và client-side, dùng ### để phân tách rồi copy cả 2 bảng. Nếu không có → bỏ qua." },
+          api_contract:          { type: "string", description: "(Tùy chọn) API contract — copy nguyên vẹn Markdown từ requirements (endpoint, method, request/response với code blocks). Nếu không có → bỏ qua." },
+          error_catalog:         { type: "string", description: "(Tùy chọn) Error catalog — copy nguyên vẹn Markdown từ requirements (bảng Error Code, HTTP Status, Message, Trigger Condition). Mỗi row → 1 Error Handling test case trong generate_testcase. Nếu không có → bỏ qua." },
         },
         required: [
           "project_name", "feature_name", "author", "stack",
@@ -1113,7 +1225,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "generate_testcase",
       description:
-        "Sinh file Test Case dạng XLSX từ spec file. Gọi SAU generate_spec — không cần đọc source code. Chỉ cần project_path tuyệt đối; tool tự tìm spec .md mới nhất trong {project_path}/output/spec/ rồi parse tự động: Section 4 (luồng chính) → Positive Scenarios; Section 5 (luồng thay thế) → Negative/Error; Section 6 (business rules) → Boundary/Normal; Section 7 (data validation) → Boundary/Normal; Section 10 (error catalog) → Error Handling. Dùng spec_file để override file cụ thể. Chỉ dùng test_cases JSON khi không có spec file.",
+        "Sinh file Test Case dạng XLSX từ spec file. BẮT BUỘC: phải truyền ít nhất một trong ba tham số sau — (1) spec_file: đường dẫn tuyệt đối đến file spec .md, (2) project_path: đường dẫn tuyệt đối đến project (tool tự tìm spec .md mới nhất trong {project_path}/output/spec/), hoặc (3) test_cases: JSON array thủ công khi không có spec. Gọi tool với object rỗng {} sẽ trả về lỗi. Gọi SAU generate_spec — không cần đọc source code. Tool tự parse spec tự động: Section 4 (luồng chính) → Positive Scenarios; Section 5 (luồng thay thế) → Negative/Error; Section 6 (business rules) → Boundary/Normal; Section 7 (data validation) → Boundary/Normal; Section 10 (error catalog) → Error Handling. Chỉ dùng test_cases JSON khi không có spec file.",
       inputSchema: {
         type: "object",
         properties: {
@@ -1121,6 +1233,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           feature: {
             type: "string",
             description: "(Tùy chọn) Tên chức năng. Tự động lấy từ spec nếu bỏ trống.",
+          },
+          feature_slug: {
+            type: "string",
+            description: "(Tùy chọn) Slug dùng cho tên file — chỉ gồm a-z, 0-9, _, - (không dấu, không khoảng trắng). Nếu không truyền, tool tự derive từ feature.",
           },
           spec_file: {
             type: "string",
@@ -1144,7 +1260,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           project_name:   { type: "string", description: "Tên dự án" },
           project_path:   { type: "string", description: PROJECT_PATH_DESC },
-          feature_name:   { type: "string", description: "Tên chức năng được review" },
+          feature_name:   { type: "string", description: "Tên chức năng đầy đủ dùng để hiển thị trong tài liệu (tiếng Việt hoặc tiếng Anh). Ví dụ: 'Đăng nhập', 'User Login'." },
+          feature_slug:   { type: "string", description: "(Tùy chọn) Slug dùng cho tên file — chỉ gồm a-z, 0-9, _, - (không dấu, không khoảng trắng). Nếu không truyền, tool tự derive từ feature_name." },
           reviewer:       { type: "string", description: "Tên người review" },
           reviewee:       { type: "string", description: "Tên người được review" },
           stack:          { type: "string", description: 'Tech stack, ví dụ: "Laravel 10 + React 18"' },
@@ -1184,10 +1301,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       assertParsed(parseResult);
       const params = parseResult.data;
       const now = new Date();
-      const outputDir = resolveOutputDir(path.resolve(__dirname, "../output"), "spec", params.project_path);
-      await fs.mkdir(outputDir, { recursive: true });
+      const outputDir = await resolveAndMkdirOutputDir("spec", params.project_path);
 
-      const safeFeature = toSlug(params.feature_name) || "unnamed";
+      const safeFeature = (params.feature_slug || toSlug(params.feature_name)) || "unnamed";
       const version = await getNextVersion(outputDir, safeFeature);
       const content = await renderSpec(params, now, version);
       const filename = `spec_${safeFeature}_v${version}_0_${formatTimestamp(now)}.md`;
@@ -1201,12 +1317,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ],
       };
     } catch (error) {
-      console.error("[generate_spec] Error:", error); // M1: log for debugging via stderr
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        isError: true,
-        content: [{ type: "text", text: `Error generating spec: ${message}` }],
-      };
+      return toolError("generate_spec", error);
     }
   }
 
@@ -1224,8 +1335,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Resolve spec file path: explicit override OR auto-discover from project_path/output/spec/
         if (params.spec_file) {
           resolvedSpecFile = path.resolve(params.spec_file);
+          if (params.project_path) {
+            const resolvedProject = path.resolve(params.project_path.replace(/[/\\]+$/, ""));
+            if (!resolvedSpecFile.startsWith(resolvedProject + path.sep)) {
+              throw new Error(`spec_file phải nằm trong project_path: "${resolvedProject}"`);
+            }
+          } else {
+            const mcpOutputRoot = path.resolve(__dirname, "../output");
+            if (!resolvedSpecFile.startsWith(mcpOutputRoot + path.sep)) {
+              throw new Error(`spec_file khi không có project_path phải nằm trong output của mcp-spec-generator: "${mcpOutputRoot}"`);
+            }
+          }
         } else {
-          const specDir = path.join(params.project_path!.replace(/[/\\]+$/, ""), "output", "spec");
+          if (!params.project_path) throw new Error("project_path là bắt buộc khi không cung cấp spec_file hoặc test_cases");
+          const specDir = path.join(params.project_path.replace(/[/\\]+$/, ""), "output", "spec");
           let dirFiles: string[];
           try {
             dirFiles = await fs.readdir(specDir);
@@ -1279,9 +1402,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       if (!featureName) featureName = "unnamed";
       const now = new Date();
-      const outputDir = resolveOutputDir(path.resolve(__dirname, "../output"), "testcase", params.project_path);
-      await fs.mkdir(outputDir, { recursive: true });
-      const filePath = await generateXlsx(featureName, items, outputDir, formatTimestamp(now));
+      const outputDir = await resolveAndMkdirOutputDir("testcase", params.project_path);
+      const slugFromSpecFile = resolvedSpecFile
+        ? (path.basename(resolvedSpecFile, ".md").match(/^spec_(.+?)_v\d+_\d+_\d{8}_\d{6}$/)?.[1] ?? undefined)
+        : undefined;
+      const effectiveSlug = params.feature_slug ?? slugFromSpecFile;
+      const filePath = await generateXlsx(featureName, items, outputDir, formatTimestamp(now), effectiveSlug);
       const specInfo = resolvedSpecFile ? `Spec file: ${resolvedSpecFile}\n` : "";
 
       return {
@@ -1293,12 +1419,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ],
       };
     } catch (error) {
-      console.error("[generate_testcase] Error:", error);
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        isError: true,
-        content: [{ type: "text", text: `Error generating testcase: ${message}` }],
-      };
+      return toolError("generate_testcase", error);
     }
   }
 
@@ -1330,10 +1451,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
 
       const now = new Date();
-      const outputDir = resolveOutputDir(path.resolve(__dirname, "../output"), "review", params.project_path);
-      await fs.mkdir(outputDir, { recursive: true });
+      const outputDir = await resolveAndMkdirOutputDir("review", params.project_path);
 
-      const slug = toSlug(params.feature_name) || "unnamed";
+      const slug = (params.feature_slug || toSlug(params.feature_name)) || "unnamed";
       const ts   = formatTimestamp(now);
       const mdPath   = path.join(outputDir, `review_${slug}_${ts}.md`);
       const jsonPath = path.join(outputDir, `review_${slug}_${ts}.json`);
@@ -1373,12 +1493,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ],
       };
     } catch (error) {
-      console.error("[generate_review] Error:", error);
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        isError: true,
-        content: [{ type: "text", text: `Error generating review: ${message}` }],
-      };
+      return toolError("generate_review", error);
     }
   }
 

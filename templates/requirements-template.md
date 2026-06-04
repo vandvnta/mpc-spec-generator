@@ -15,10 +15,14 @@ Hướng dẫn dùng:
 | Trường | Giá trị |
 |---|---|
 | Dự án | _(tên project)_ |
+| Feature ID | _(VD: FT-001, hoặc ticket ID từ Jira/Linear)_ |
 | Tên chức năng | _(tên feature ngắn gọn, VD: "Đăng ký tài khoản")_ |
 | Người phụ trách | _(tên BA / developer)_ |
+| Reviewer | _(tên người review tài liệu spec này)_ |
 | Tech stack | _(VD: Laravel 10 + React 18, NestJS + PostgreSQL)_ |
 | Ngày viết | _(YYYY-MM-DD)_ |
+| Scope | _(Những gì spec này bao phủ, VD: "Đăng nhập bằng email/password, JWT, remember me")_ |
+| Out of Scope | _(Những gì không thuộc spec này, VD: "Đăng ký tài khoản, OAuth, 2FA")_ |
 
 ---
 
@@ -118,6 +122,77 @@ Mỗi rule trên một dòng. Càng cụ thể càng tốt.
 
 ---
 
+## Data Validation Rules
+
+<!--
+Quy tắc kiểm tra dữ liệu đầu vào.
+Bỏ trống nếu không có validation đặc biệt — tool sẽ dùng placeholder.
+
+### Server-side (tên class FormRequest nếu có)
+
+| Field    | Type    | Required | Allowed Values              | Constraint                  | Error Code | Error Message                        |
+|----------|---------|----------|-----------------------------|------------------------------|------------|--------------------------------------|
+| email    | string  | Yes      | valid email format          | —                            | ERR-V-001  | "Email không đúng định dạng"         |
+| password | string  | Yes      | —                           | không được để trống          | ERR-V-002  | "Trường này không được để trống"     |
+| remember | boolean | No       | true / false                | —                            | —          | —                                    |
+
+### Client-side (inline validation, không gửi request nếu sai)
+
+| Field    | Type   | Required | Allowed Values | Constraint                 | Error Code | Error Message                             |
+|----------|--------|----------|----------------|----------------------------|------------|-------------------------------------------|
+| email    | string | Yes      | valid email    | không được để trống        | —          | "Trường này không được để trống"          |
+| email    | string | Yes      | valid email    | đúng format email          | —          | "Email không đúng định dạng"              |
+-->
+
+_(Điền bảng validation — xem ví dụ trong comment bên trên)_
+
+---
+
+## API Contract
+
+<!--
+Mô tả các HTTP endpoint của chức năng này.
+Bỏ trống nếu không có API (pure UI) — tool sẽ dùng placeholder.
+
+### Tên endpoint (VD: Đăng nhập)
+
+```
+POST /api/login
+Content-Type: application/json
+```
+
+**Request body:**
+
+```json
+{
+  "email": "user@example.com",
+  "password": "secret123"
+}
+```
+
+**Response 200 — Thành công:**
+
+```json
+{
+  "message": "...",
+  "data": { ... }
+}
+```
+
+**Response 422 — Validation thất bại:**
+
+```json
+{
+  "message": "The given data was invalid.",
+  "errors": { "email": ["..."] }
+}
+```
+-->
+
+_(Điền API contract — xem ví dụ trong comment bên trên)_
+
+---
+
 ## UI Flow (nếu có)
 
 <!--
@@ -151,6 +226,22 @@ Performance, security, scalability... Bỏ trống nếu không có yêu cầu c
 - _(VD: Response time < 500ms trong điều kiện bình thường)_
 - _(VD: Mật khẩu lưu dưới dạng bcrypt hash, không plain text)_
 - _(VD: Rate limit: tối đa 5 lần đăng ký từ cùng IP trong 1 giờ)_
+
+---
+
+## Error Catalog
+
+<!--
+Danh sách error codes mà chức năng này có thể trả về.
+Điền bảng này để generate_testcase tự động tạo Error Handling test case cho mỗi row.
+Bỏ trống nếu không có error catalog đặc thù — tool sẽ dùng placeholder.
+
+Cột "Retry?": Yes nếu client có thể retry, No nếu không.
+-->
+
+| Error Code | HTTP Status | Message                                   | Trigger Condition                          | Retry? |
+|------------|-------------|-------------------------------------------|--------------------------------------------|--------|
+| _(VD: ERR-V-001)_ | _(VD: 422)_ | _(VD: "Email không đúng định dạng")_ | _(VD: field email không match RFC 5321)_ | _(No)_ |
 
 ---
 

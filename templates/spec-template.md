@@ -7,12 +7,12 @@
 | Field           | Value                          |
 |-----------------|-------------------------------|
 | Project         | {{project_name}}              |
-| Feature ID      | FT-[XXX]                      |
+| Feature ID      | {{feature_id}}                |
 | Chức năng       | {{feature_name}}              |
 | Module / Epic   | [Module]                      |
 | Author          | {{author}}                    |
 | Tech Stack      | {{stack}}                     |
-| Reviewer        | [Tên reviewer]                |
+| Reviewer        | {{reviewer}}                  |
 | Status          | Draft                         |
 | Version         | {{version}}                   |
 | Created         | {{date}}                      |
@@ -23,9 +23,9 @@
 
 {{overview}}
 
-**Scope:** [Những gì bao gồm trong spec này]
+**Scope:** {{scope}}
 
-**Out of Scope:** [Các phần liên quan nhưng không thuộc spec này]
+**Out of Scope:** {{out_of_scope}}
 
 ---
 
@@ -61,15 +61,13 @@
 
 ## 7. Data Validation Rules
 
-| Field          | Type    | Required | Allowed Values / Format    | Regex / Constraint | Error Code | Error Message             |
-|----------------|---------|----------|----------------------------|--------------------|------------|---------------------------|
-| [field_name]   | string  | Yes      | [Enum / range / format]    | —                  | ERR-001    | "[Thông báo lỗi cho user]" |
+{{data_validation_rules}}
 
 ---
 
 ## 8. API Contract
 
-> [Mô tả API endpoints ở đây — method, path, request body, response examples]
+{{api_contract}}
 
 ---
 
@@ -81,9 +79,7 @@
 
 ## 10. Error Catalog
 
-| Error Code | HTTP Status | Message                          | Trigger Condition        | Retry? |
-|------------|-------------|----------------------------------|--------------------------|--------|
-| ERR-001    | 400         | "[Thông báo cho user]"           | [Điều kiện kích hoạt]    | No     |
+{{error_catalog}}
 
 ---
 
